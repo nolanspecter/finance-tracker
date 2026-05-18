@@ -1,0 +1,173 @@
+{% extends "base.html" %}
+{% block content %}
+<div class="page-head">
+  <h1>Investments</h1>
+  <form method="post" action="{{ url_for('consolidate_investments') }}"
+        onsubmit="return confirm('Merge any duplicate holdings (same symbol/name + currency + type) using weighted-average cost?');">
+    <button type="submit" class="btn">Consolidate Duplicates</button>
+  </form>
+</div>
+
+<section class="panel">
+  <h2>Totals by Currency</h2>
+  {% if totals %}
+  <table class="data">
+    <thead>
+      <tr>
+        <th>Currency</th>
+        <th class="right">Cost</th>
+        <th class="right">Value</th>
+        <th class="right">Gain / Loss</th>
+        <th class="right">%</th>
+      </tr>
+    </thead>
+    <tbody>
+      {% for t in totals %}
+      <tr>
+        <td><strong>{{ t.currency }}</strong> <span class="muted small">({{ t.symbol }})</span></td>
+        <td class="right">{{ t.cost | money_in(t.currency) }}</td>
+        <td class="right">{{ t.value | money_in(t.currency) }}</td>
+        <td class="right {% if t.gain < 0 %}expense{% else %}income{% endif %}">
+          {{ t.gain | money_in(t.currency) }}
+        </td>
+        <td class="right {% if t.gain < 0 %}expense{% else %}income{% endif %}">
+          {{ '%.2f' % t.gain_pct }}%
+        </td>
+      </tr>
+      {% endfor %}
+    </tbody>
+  </table>
+  <p class="muted small">Totals are kept separate per currency — no FX conversion applied.</p>
+  {% else %}
+    <p class="muted">No holdings yet.</p>
+  {% endif %}
+</section>
+
+<div class="grid">
+  <section class="panel">
+    <h2>Add Holding</h2>
+    <form method="post" action="{{ url_for('add_investment') }}" class="form-grid">
+      <label>Name
+        <input type="text" name="name" required placeholder="Apple Inc.">
+      </label>
+      <label>Symbol
+        <input type="text" name="symbol" placeholder="AAPL">
+      </label>
+      <label>Type
+        <select name="asset_type">
+          {% for t in asset_types %}
+            <option value="{{ t }}">{{ t.replace('_', ' ').title() }}</option>
+          {% endfor %}
+        </select>
+      </label>
+      <label>Purchase Date
+        <input type="date" name="purchase_date" value="{{ today }}">
+      </label>
+      <label>Units / Shares
+        <input type="number" name="units" step="any" min="0" required placeholder="10">
+      </label>
+      <label>Cost Basis (per unit)
+        <input type="number" name="cost_basis" step="any" min="0" required placeholder="150.00">
+      </label>
+      <label>Current Price (per unit)
+        <input type="number" name="current_price" step="any" min="0" placeholder="defaults to cost">
+      </label>
+      <label>Currency
+        <select name="currency">
+          {% for code, sym in currencies.items() %}
+            <option value="{{ code }}" {% if code == currency_code %}selected{% endif %}>{{ code }} ({{ sym }})</option>
+          {% endfor %}
+        </select>
+      </label>
+      <label class="span-2">Note
+        <input type="text" name="note" placeholder="Optional">
+      </label>
+      <button type="submit" class="btn primary">Add Holding</button>
+    </form>
+  </section>
+
+  <section class="panel">
+    <h2>Allocation by Type</h2>
+    {% if allocations %}
+      {% for alloc in allocations %}
+        <div class="alloc-block">
+          <div class="alloc-label">{{ alloc.currency }}</div>
+          <canvas id="allocChart-{{ alloc.currency }}" height="180"></canvas>
+        </div>
+      {% endfor %}
+    {% else %}
+      <p class="muted">Add a holding to see allocation.</p>
+    {% endif %}
+  </section>
+</div>
+
+<section class="panel">
+  <h2>Holdings</h2>
+  {% if holdings %}
+  <table class="data">
+    <thead>
+      <tr>
+        <th>Name</th><th>Symbol</th><th>Type</th><th>Ccy</th>
+        <th class="right">Units</th>
+        <th class="right">Cost / Unit</th>
+        <th class="right">Price / Unit</th>
+        <th class="right">Value</th>
+        <th class="right">Gain</th>
+        <th></th>
+      </tr>
+    </thead>
+    <tbody>
+      {% for h in holdings %}
+      <tr>
+        <td>{{ h.name }}</td>
+        <td>{{ h.symbol or '—' }}</td>
+        <td><span class="pill">{{ h.asset_type.replace('_', ' ') }}</span></td>
+        <td><span class="pill">{{ h.currency }}</span></td>
+        <td class="right">{{ '%g' % h.units }}</td>
+        <td class="right">{{ h.cost_basis | money_in(h.currency) }}</td>
+        <td class="right">
+          <form method="post" action="{{ url_for('update_investment_price', inv_id=h.id) }}" class="price-form">
+            <input type="number" name="current_price" step="any" min="0"
+                   value="{{ '%g' % h.current_price }}" onchange="this.form.submit()">
+          </form>
+        </td>
+        <td class="right">{{ h.value | money_in(h.currency) }}</td>
+        <td class="right {% if h.gain < 0 %}expense{% else %}income{% endif %}">
+          {{ h.gain | money_in(h.currency) }}<br>
+          <span class="small">{{ '%.2f' % h.gain_pct }}%</span>
+        </td>
+        <td>
+          <form method="post" action="{{ url_for('delete_investment', inv_id=h.id) }}"
+                onsubmit="return confirm('Delete this holding?')">
+            <button type="submit" class="btn danger small">Delete</button>
+          </form>
+        </td>
+      </tr>
+      {% endfor %}
+    </tbody>
+  </table>
+  <p class="muted small">Tip: edit the price field to refresh current value — saves on change.</p>
+  {% else %}
+    <p class="muted">No holdings yet. Add one above to get started.</p>
+  {% endif %}
+</section>
+
+{% if allocations %}
+<script>
+  const palette = ['#4f46e5','#06b6d4','#10b981','#f59e0b','#ef4444','#8b5cf6','#ec4899'];
+  {% for alloc in allocations %}
+  new Chart(document.getElementById('allocChart-{{ alloc.currency }}'), {
+    type: 'doughnut',
+    data: {
+      labels: {{ alloc.parts | map(attribute='name') | list | tojson }},
+      datasets: [{
+        data: {{ alloc.parts | map(attribute='value') | list | tojson }},
+        backgroundColor: palette
+      }]
+    },
+    options: { plugins: { legend: { position: 'right' } } }
+  });
+  {% endfor %}
+</script>
+{% endif %}
+{% endblock %}

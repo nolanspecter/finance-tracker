@@ -187,3 +187,21 @@ input:focus, select:focus { outline: 2px solid var(--accent); }
 .flash.error { background: rgba(239, 68, 68, 0.15); color: var(--expense); border: 1px solid var(--expense); }
 
 .inline { display: inline-flex; gap: 0.5rem; align-items: center; }
+
+.price-form { display: inline; }
+.price-form input {
+  width: 90px;
+  padding: 0.3rem 0.5rem;
+  text-align: right;
+  font-size: 0.9rem;
+}
+
+.alloc-block { margin-bottom: 1.25rem; }
+.alloc-block:last-child { margin-bottom: 0; }
+.alloc-label {
+  font-size: 0.8rem;
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+  color: var(--muted);
+  margin-bottom: 0.4rem;
+}
