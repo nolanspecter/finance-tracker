@@ -25,6 +25,7 @@ CURRENCIES = {
     "BRL": "R$",
     "MXN": "MX$",
     "ZAR": "R",
+    "VND": "₫",
 }
 
 DEFAULT_CATEGORIES = [
@@ -61,6 +62,18 @@ def init_db():
     conn = sqlite3.connect(DB_PATH)
     conn.executescript(
         """
+        CREATE TABLE IF NOT EXISTS investments (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            name TEXT NOT NULL,
+            symbol TEXT NOT NULL DEFAULT '',
+            asset_type TEXT NOT NULL DEFAULT 'stock',
+            units REAL NOT NULL,
+            cost_basis REAL NOT NULL,
+            current_price REAL NOT NULL,
+            currency TEXT NOT NULL DEFAULT 'USD',
+            purchase_date TEXT,
+            note TEXT
+        );
         CREATE TABLE IF NOT EXISTS settings (
             key TEXT PRIMARY KEY,
             value TEXT NOT NULL
@@ -92,6 +105,11 @@ def init_db():
     if "person" not in cols:
         conn.execute(
             "ALTER TABLE transactions ADD COLUMN person TEXT NOT NULL DEFAULT ''"
+        )
+    inv_cols = {r[1] for r in conn.execute("PRAGMA table_info(investments)").fetchall()}
+    if "currency" not in inv_cols:
+        conn.execute(
+            "ALTER TABLE investments ADD COLUMN currency TEXT NOT NULL DEFAULT 'USD'"
         )
     cur = conn.execute("SELECT COUNT(*) FROM categories")
     if cur.fetchone()[0] == 0:
@@ -272,9 +290,237 @@ def categories_view():
     return render_template("categories.html", categories=cats)
 
 
+ASSET_TYPES = ["stock", "etf", "crypto", "bond", "real_estate", "cash", "other"]
+
+
+@app.route("/investments")
+def investments_view():
+    db = get_db()
+    rows = db.execute(
+        "SELECT * FROM investments ORDER BY asset_type, name"
+    ).fetchall()
+
+    holdings = []
+    totals_by_ccy = {}
+    by_type_by_ccy = {}
+    for r in rows:
+        ccy = r["currency"] if "currency" in r.keys() and r["currency"] else "USD"
+        cost = r["units"] * r["cost_basis"]
+        value = r["units"] * r["current_price"]
+        gain = value - cost
+        gain_pct = (gain / cost * 100) if cost else 0
+        holdings.append({
+            "id": r["id"], "name": r["name"], "symbol": r["symbol"],
+            "asset_type": r["asset_type"], "units": r["units"],
+            "cost_basis": r["cost_basis"], "current_price": r["current_price"],
+            "currency": ccy,
+            "purchase_date": r["purchase_date"], "note": r["note"],
+            "cost": cost, "value": value, "gain": gain, "gain_pct": gain_pct,
+        })
+        t = totals_by_ccy.setdefault(ccy, {"cost": 0.0, "value": 0.0})
+        t["cost"] += cost
+        t["value"] += value
+        bt = by_type_by_ccy.setdefault(ccy, {})
+        bt[r["asset_type"]] = bt.get(r["asset_type"], 0) + value
+
+    totals = []
+    for ccy, t in sorted(totals_by_ccy.items()):
+        gain = t["value"] - t["cost"]
+        totals.append({
+            "currency": ccy,
+            "symbol": CURRENCIES.get(ccy, ccy),
+            "cost": t["cost"], "value": t["value"], "gain": gain,
+            "gain_pct": (gain / t["cost"] * 100) if t["cost"] else 0,
+        })
+
+    allocations = []
+    for ccy, by_type in sorted(by_type_by_ccy.items()):
+        parts = [{"name": k, "value": v} for k, v in by_type.items() if v > 0]
+        if parts:
+            allocations.append({"currency": ccy, "parts": parts})
+
+    return render_template(
+        "investments.html",
+        holdings=holdings,
+        totals=totals,
+        allocations=allocations,
+        asset_types=ASSET_TYPES,
+        today=date.today().isoformat(),
+    )
+
+
+@app.route("/investments/add", methods=["POST"])
+def add_investment():
+    db = get_db()
+    f = request.form
+    try:
+        units = float(f["units"])
+        cost_basis = float(f["cost_basis"])
+        current_price = float(f.get("current_price") or cost_basis)
+        if units <= 0 or cost_basis < 0:
+            raise ValueError("Units must be positive, cost basis non-negative")
+    except (KeyError, ValueError) as e:
+        flash(f"Invalid input: {e}", "error")
+        return redirect(url_for("investments_view"))
+
+    name = f.get("name", "").strip()
+    if not name:
+        flash("Name is required", "error")
+        return redirect(url_for("investments_view"))
+
+    asset_type = f.get("asset_type", "stock")
+    if asset_type not in ASSET_TYPES:
+        asset_type = "other"
+
+    currency = f.get("currency", get_currency()[0])
+    if currency not in CURRENCIES:
+        currency = "USD"
+
+    symbol = f.get("symbol", "").strip().upper()
+    purchase_date = f.get("purchase_date") or None
+    note = f.get("note", "").strip()
+
+    if symbol:
+        existing = db.execute(
+            "SELECT * FROM investments WHERE upper(trim(symbol)) = ? "
+            "AND upper(trim(currency)) = ? AND lower(trim(asset_type)) = ?",
+            (symbol, currency.upper(), asset_type.lower()),
+        ).fetchone()
+    else:
+        existing = db.execute(
+            "SELECT * FROM investments WHERE (symbol IS NULL OR trim(symbol) = '') "
+            "AND lower(trim(name)) = ? AND upper(trim(currency)) = ? AND lower(trim(asset_type)) = ?",
+            (name.strip().lower(), currency.upper(), asset_type.lower()),
+        ).fetchone()
+
+    if existing:
+        old_units = existing["units"]
+        old_cost = existing["cost_basis"]
+        total_units = old_units + units
+        avg_cost = ((old_units * old_cost) + (units * cost_basis)) / total_units
+        new_price = current_price if "current_price" in f and f["current_price"] else existing["current_price"]
+        db.execute(
+            """UPDATE investments
+               SET units = ?, cost_basis = ?, current_price = ?,
+                   purchase_date = COALESCE(?, purchase_date),
+                   note = CASE WHEN ? != '' THEN ? ELSE note END
+               WHERE id = ?""",
+            (total_units, avg_cost, new_price, purchase_date, note, note, existing["id"]),
+        )
+        db.commit()
+        flash(f"Added to existing holding — new avg cost {avg_cost:,.4f}", "success")
+    else:
+        db.execute(
+            """INSERT INTO investments
+               (name, symbol, asset_type, units, cost_basis, current_price, currency, purchase_date, note)
+               VALUES (?,?,?,?,?,?,?,?,?)""",
+            (name, symbol, asset_type, units, cost_basis,
+             current_price, currency, purchase_date, note),
+        )
+        db.commit()
+        flash("Investment added", "success")
+    return redirect(url_for("investments_view"))
+
+
+@app.route("/investments/<int:inv_id>/price", methods=["POST"])
+def update_investment_price(inv_id):
+    try:
+        price = float(request.form["current_price"])
+        if price < 0:
+            raise ValueError
+    except (KeyError, ValueError):
+        flash("Invalid price", "error")
+        return redirect(url_for("investments_view"))
+    db = get_db()
+    db.execute("UPDATE investments SET current_price = ? WHERE id = ?", (price, inv_id))
+    db.commit()
+    return redirect(url_for("investments_view"))
+
+
+@app.route("/investments/consolidate", methods=["POST"])
+def consolidate_investments():
+    db = get_db()
+    rows = db.execute("SELECT * FROM investments ORDER BY id").fetchall()
+    groups = {}
+    for r in rows:
+        sym = (r["symbol"] or "").strip().upper()
+        ccy = (r["currency"] or "").strip().upper()
+        atype = (r["asset_type"] or "").strip().lower()
+        name = (r["name"] or "").strip().lower()
+        if sym:
+            key = ("sym", sym, ccy, atype)
+        else:
+            key = ("name", name, ccy, atype)
+        groups.setdefault(key, []).append(r)
+
+    merged_rows = 0
+    affected_assets = 0
+    details = []
+    for key, items in groups.items():
+        if len(items) < 2:
+            continue
+        affected_assets += 1
+        total_units = sum(i["units"] for i in items)
+        if total_units <= 0:
+            continue
+        total_cost = sum(i["units"] * i["cost_basis"] for i in items)
+        avg_cost = total_cost / total_units
+        keeper = items[0]
+        latest = max(items, key=lambda i: i["id"])
+        # Normalize the kept row's identifying fields so future adds match
+        db.execute(
+            """UPDATE investments
+               SET units = ?, cost_basis = ?, current_price = ?,
+                   symbol = ?, currency = ?, asset_type = ?
+               WHERE id = ?""",
+            (
+                total_units, avg_cost, latest["current_price"],
+                key[1].upper() if key[0] == "sym" else keeper["symbol"],
+                key[2], key[3],
+                keeper["id"],
+            ),
+        )
+        for i in items[1:]:
+            db.execute("DELETE FROM investments WHERE id = ?", (i["id"],))
+            merged_rows += 1
+        details.append(f"{key[1]} ({key[2]}, {key[3]}): {len(items)} rows → avg {avg_cost:,.4f}")
+    db.commit()
+    if merged_rows:
+        flash(
+            f"Consolidated {affected_assets} asset(s), merged {merged_rows} row(s). "
+            + "; ".join(details),
+            "success",
+        )
+    else:
+        flash(
+            f"No duplicate holdings found across {len(rows)} row(s). "
+            "Duplicates require same symbol (case-insensitive) OR same name, "
+            "plus same currency and asset type.",
+            "error",
+        )
+    return redirect(url_for("investments_view"))
+
+
+@app.route("/investments/<int:inv_id>/delete", methods=["POST"])
+def delete_investment(inv_id):
+    db = get_db()
+    db.execute("DELETE FROM investments WHERE id = ?", (inv_id,))
+    db.commit()
+    return redirect(url_for("investments_view"))
+
+
 @app.template_filter("money")
 def money_filter(v):
     _, sym = get_currency()
+    try:
+        return f"{sym}{float(v):,.2f}"
+    except (TypeError, ValueError):
+        return f"{sym}0.00"
+
+
+@app.template_filter("money_in")
+def money_in_filter(v, code):
+    sym = CURRENCIES.get(code, code)
     try:
         return f"{sym}{float(v):,.2f}"
     except (TypeError, ValueError):
