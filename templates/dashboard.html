@@ -1,0 +1,110 @@
+{% extends "base.html" %}
+{% block content %}
+
+<div class="page-head">
+  <h1>Dashboard</h1>
+  <form method="get" class="inline">
+    <label>Month:
+      <select name="month" onchange="this.form.submit()">
+        {% for m in month_options %}
+          <option value="{{ m }}" {% if m == month %}selected{% endif %}>{{ m }}</option>
+        {% endfor %}
+      </select>
+    </label>
+  </form>
+</div>
+
+<div class="cards">
+  <div class="card income">
+    <div class="label">Income</div>
+    <div class="value">{{ summary.income | money }}</div>
+  </div>
+  <div class="card expense">
+    <div class="label">Expenses</div>
+    <div class="value">{{ summary.expense | money }}</div>
+  </div>
+  <div class="card net {% if summary.net < 0 %}negative{% endif %}">
+    <div class="label">Net</div>
+    <div class="value">{{ summary.net | money }}</div>
+  </div>
+</div>
+
+<div class="grid">
+  <section class="panel">
+    <h2>Spending by Category</h2>
+    {% if expense_chart %}
+      <canvas id="catChart" height="220"></canvas>
+    {% else %}
+      <p class="muted">No expenses recorded for this month.</p>
+    {% endif %}
+  </section>
+
+  <section class="panel">
+    <h2>Budgets</h2>
+    <table class="data">
+      <thead><tr><th>Category</th><th>Spent</th><th>Budget</th><th>Progress</th></tr></thead>
+      <tbody>
+      {% for r in by_cat if r.kind == 'expense' %}
+        <tr>
+          <td>{{ r.name }}</td>
+          <td>{{ r.spent | money }}</td>
+          <td>{{ r.budget | money }}</td>
+          <td>
+            {% if r.budget and r.budget > 0 %}
+              {% set pct = (r.spent / r.budget * 100) %}
+              <div class="bar">
+                <div class="bar-fill {% if pct > 100 %}over{% elif pct > 80 %}warn{% endif %}"
+                     style="width: {{ [pct, 100] | min }}%"></div>
+              </div>
+              <span class="small {% if pct > 100 %}danger{% endif %}">{{ '%.0f' % pct }}%</span>
+            {% else %}
+              <span class="muted small">—</span>
+            {% endif %}
+          </td>
+        </tr>
+      {% endfor %}
+      </tbody>
+    </table>
+  </section>
+</div>
+
+<section class="panel">
+  <h2>Recent Transactions</h2>
+  {% if recent %}
+  <table class="data">
+    <thead><tr><th>Date</th><th>Category</th><th>Payment</th><th>Who</th><th>Note</th><th class="right">Amount</th></tr></thead>
+    <tbody>
+      {% for t in recent %}
+      <tr>
+        <td>{{ t.tx_date }}</td>
+        <td>{{ t.category or '—' }}</td>
+        <td><span class="pill pay-{{ t.payment_method }}">{{ t.payment_method }}</span></td>
+        <td>{{ t.person or '—' }}</td>
+        <td>{{ t.note }}</td>
+        <td class="right {{ t.kind }}">{{ '+' if t.kind == 'income' else '-' }}{{ t.amount | money }}</td>
+      </tr>
+      {% endfor %}
+    </tbody>
+  </table>
+  {% else %}
+    <p class="muted">No transactions yet. <a href="{{ url_for('transactions_list') }}">Add your first one →</a></p>
+  {% endif %}
+</section>
+
+{% if expense_chart %}
+<script>
+  const ctx = document.getElementById('catChart');
+  new Chart(ctx, {
+    type: 'doughnut',
+    data: {
+      labels: {{ expense_chart | map(attribute='name') | list | tojson }},
+      datasets: [{
+        data: {{ expense_chart | map(attribute='spent') | list | tojson }},
+        backgroundColor: ['#4f46e5','#06b6d4','#10b981','#f59e0b','#ef4444','#8b5cf6','#ec4899','#14b8a6','#f97316','#84cc16','#64748b']
+      }]
+    },
+    options: { plugins: { legend: { position: 'right' } } }
+  });
+</script>
+{% endif %}
+{% endblock %}

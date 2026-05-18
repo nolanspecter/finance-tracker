@@ -1,0 +1,62 @@
+{% extends "base.html" %}
+{% block content %}
+<h1>Categories & Budgets</h1>
+
+<section class="panel">
+  <h2>Add Category</h2>
+  <form method="post" class="form-grid">
+    <input type="hidden" name="action" value="add">
+    <label>Name
+      <input type="text" name="name" required>
+    </label>
+    <label>Type
+      <select name="kind">
+        <option value="expense">Expense</option>
+        <option value="income">Income</option>
+      </select>
+    </label>
+    <label>Monthly Budget
+      <input type="number" name="monthly_budget" step="0.01" min="0" value="0">
+    </label>
+    <button type="submit" class="btn primary">Add</button>
+  </form>
+</section>
+
+<section class="panel">
+  <h2>Manage Budgets</h2>
+  <form method="post">
+    <input type="hidden" name="action" value="update_budgets">
+    <table class="data">
+      <thead><tr><th>Category</th><th>Type</th><th>Monthly Budget</th><th></th></tr></thead>
+      <tbody>
+      {% for c in categories %}
+        <tr>
+          <td>{{ c.name }}</td>
+          <td><span class="pill {{ c.kind }}">{{ c.kind }}</span></td>
+          <td>
+            {% if c.kind == 'expense' %}
+              <input type="number" name="budget_{{ c.id }}" step="0.01" min="0"
+                     value="{{ '%.2f' % (c.monthly_budget or 0) }}">
+            {% else %}
+              <span class="muted">—</span>
+            {% endif %}
+          </td>
+          <td>
+            <button type="submit" form="del-{{ c.id }}" class="btn danger small"
+                    onclick="return confirm('Delete category? Transactions will be uncategorized.')">Delete Category</button>
+          </td>
+        </tr>
+      {% endfor %}
+      </tbody>
+    </table>
+    <button type="submit" class="btn primary">Save Budgets</button>
+  </form>
+
+  {% for c in categories %}
+    <form method="post" id="del-{{ c.id }}" style="display:none">
+      <input type="hidden" name="action" value="delete">
+      <input type="hidden" name="id" value="{{ c.id }}">
+    </form>
+  {% endfor %}
+</section>
+{% endblock %}
